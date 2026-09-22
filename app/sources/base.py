@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import Protocol
 
+
 @dataclass
 class StreamVariant:
     source_id: str
@@ -11,7 +12,9 @@ class StreamVariant:
     url: str
     kind: str = "hls"
 
+
 class SourceAdapter(Protocol):
     id: str
     name: str
-    async def get_streams(self, title_id: str, season: int, episode: int) -> list[StreamVariant]: ...
+
+    async def get_streams(self, title: dict, season: int, episode: int) -> list[StreamVariant]: ...

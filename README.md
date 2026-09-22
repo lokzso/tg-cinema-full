@@ -1,86 +1,91 @@
-# Telegram Cinema Full
+# Tg Cinema Full v2
 
-Готовая база Telegram-кинотеатра: бот открывает Telegram Mini App, а Mini App даёт поиск, каталог, сезоны/серии, выбор источника/озвучки/качества, HLS-проигрыватель, избранное и продолжение просмотра.
+Telegram Mini App + бот с динамическим поиском каталога, агрегатором источников, выбором озвучки/качества, HLS-плеером, избранным и продолжением просмотра.
 
-## Уже реализовано
-- Telegram `/start` + кнопка открытия Mini App
-- каталог и быстрый поиск
-- карточки тайтлов
-- сезоны и серии
-- подключаемые источники через `app/sources/`
-- выбор источника / озвучки / качества
-- HLS-плеер через hls.js
-- сохранение позиции просмотра каждые 15 секунд
-- продолжение просмотра с сохранённого места
-- история в разделе «Продолжить»
-- избранное
-- SQLite без отдельного сервера БД
-- healthcheck `/health`
-- Docker / docker-compose
+## Что изменилось в v2
+- поиск каталога больше не ограничен `catalog.json`;
+- AniList подключён без API-ключа для поиска аниме;
+- опционально TMDB для фильмов/сериалов/аниме (`TMDB_BEARER_TOKEN`);
+- источники видео собираются параллельно через `app/sources/`;
+- выбор `Источник → Озвучка → Качество` раздельный;
+- лучший вариант выбирается автоматически, сохранённый вариант восстанавливается;
+- PostgreSQL через `DATABASE_URL`, SQLite остаётся fallback для локальной разработки;
+- Telegram-бот работает webhook-ом внутри того же FastAPI/Render Web Service;
+- `/health` показывает тип БД и режим Telegram.
 
-## Источники
-В сборке установлен публичный тестовый HLS только для демонстрации плеера. Подключайте API, CDN, собственные файлы или HLS/DASH-потоки, на которые у вас есть право доступа и показа. Архитектура источников модульная: новый сервис добавляется отдельным адаптером.
+## Важное разделение
+`app/providers/` — только каталог/метаданные (название, постер, сезоны, серии).
+`app/sources/` — источники видеопотока. Подключайте только API/CDN/HLS, которые вам разрешено использовать.
 
-## Быстрый запуск
-1. Установить Python 3.12+
-2. `python -m venv .venv`
-3. Windows: `.venv\\Scripts\\activate`
-4. `pip install -r requirements.txt`
-5. Скопировать `.env.example` в `.env`
-6. Заполнить `BOT_TOKEN`
-7. Запустить Web API: `python run_web.py`
-8. Запустить бота во втором окне: `python run_bot.py`
+То есть поиск может найти `Tokyo Ghoul` через каталог, а после выбора серии `collect_streams()` спрашивает каждый подключённый source-адаптер и собирает варианты в один список.
 
-## Telegram Mini App и HTTPS
-Telegram требует HTTPS для URL Mini App. На хостинге укажите публичный HTTPS-адрес в `WEBAPP_URL`. Для локального теста можно использовать HTTPS-туннель.
+## Render
+Для Render Web Service Docker Command оставьте пустым: используется CMD из Dockerfile.
 
-## Деплой через Docker
-`docker compose up --build`
+Environment:
+- `BOT_TOKEN` — BotFather token
+- `WEBAPP_URL` — публичный URL Render, например `https://tg-cinema-full.onrender.com`
+- `DATABASE_URL` — Internal Database URL вашего Render PostgreSQL
+- `TELEGRAM_WEBHOOK_SECRET` — случайная строка только из `A-Z a-z 0-9 _ -`
+- `WEBHOOK_ENABLED=true`
+- `ANILIST_ENABLED=true`
+- `TMDB_BEARER_TOKEN` — необязательно, но рекомендуется для полноценного поиска фильмов/сериалов
 
-Для постоянной работы можно держать `web` и `bot` как два процесса/сервиса одного проекта.
+Health Check Path: `/health`
 
-## Как добавить разрешённый источник
-Создайте файл в `app/sources/`, реализуйте `get_streams(title_id, season, episode)` и верните список `StreamVariant`. Потом зарегистрируйте адаптер в `app/sources/registry.py`.
+## Подключение источника без изменения UI
+Есть готовый `AuthorizedJsonSource`. Укажите:
+- `SOURCE_API_URL=https://your-resolver.example/resolve`
+- `SOURCE_API_NAME=My CDN`
+- `SOURCE_API_TOKEN=...` (если нужен)
 
-```python
-from .base import StreamVariant
-
-class MySource:
-    id = "mysource"
-    name = "My CDN"
-
-    async def get_streams(self, title_id, season, episode):
-        return [
-            StreamVariant(
-                source_id=self.id,
-                source_name=self.name,
-                voice_id="ru1",
-                voice_name="Русская дорожка",
-                quality="1080p",
-                url="https://example.com/master.m3u8",
-            )
-        ]
+Tg Cinema отправит POST:
+```json
+{
+  "title":"Tokyo Ghoul",
+  "original_title":"Tokyo Ghoul",
+  "year":2014,
+  "provider":"anilist",
+  "external_id":"20605",
+  "season":1,
+  "episode":3
+}
 ```
 
-## Каталог
-Демо-каталог лежит в `app/data/catalog.json`. Можно добавлять фильмы/сериалы/аниме вручную либо позже подключить разрешённый API метаданных.
+Ответ API:
+```json
+{
+  "streams":[
+    {
+      "source_id":"mycdn",
+      "source_name":"My CDN",
+      "voice_id":"ru_dub",
+      "voice_name":"Русская озвучка",
+      "quality":"1080p",
+      "url":"https://cdn.example/video/master.m3u8",
+      "kind":"hls"
+    }
+  ]
+}
+```
 
-## Структура
-- `app/bot.py` — Telegram-бот
-- `app/api.py` — FastAPI + API для Mini App
-- `app/db.py` — SQLite, прогресс и избранное
-- `app/sources/` — адаптеры видеоисточников
-- `app/templates/index.html` — Mini App
-- `app/static/` — интерфейс + плеер
-- `app/data/catalog.json` — каталог
+Можно добавить сколько угодно отдельных Python-адаптеров в `app/sources/registry.py`.
 
-## Что можно добавить дальше
-- проверку подписи Telegram `initData` для публичного многопользовательского запуска
-- админ-панель для каталога
-- метаданные через разрешённый API
-- WebVTT-субтитры
-- автоматический переход на следующую серию
-- кнопки пропуска интро/эндинга
-- отдельную историю просмотра
-- рейтинг/оценки пользователя
-- серверное хранение постеров
+## Локальный запуск
+```bash
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env
+uvicorn app.api:app --reload
+```
+
+Для локального polling вместо webhook:
+```env
+WEBHOOK_ENABLED=false
+```
+и во втором терминале:
+```bash
+python run_bot.py
+```

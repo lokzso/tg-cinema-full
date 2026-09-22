@@ -1,79 +1,129 @@
-import sqlite3
-from datetime import datetime
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (
+    MetaData, Table, Column, Integer, BigInteger, String, Float, DateTime,
+    UniqueConstraint, create_engine, select, update, delete, insert
+)
+
 from .config import settings
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users(
-  id INTEGER PRIMARY KEY,
-  username TEXT,
-  first_name TEXT,
-  created_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS progress(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  title_id TEXT NOT NULL,
-  season INTEGER NOT NULL,
-  episode INTEGER NOT NULL,
-  position REAL NOT NULL DEFAULT 0,
-  duration REAL NOT NULL DEFAULT 0,
-  source_id TEXT,
-  voice_id TEXT,
-  quality TEXT,
-  updated_at TEXT NOT NULL,
-  UNIQUE(user_id,title_id,season,episode)
-);
-CREATE TABLE IF NOT EXISTS favorites(
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id INTEGER NOT NULL,
-  title_id TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(user_id,title_id)
-);
-"""
 
-def conn():
-    c = sqlite3.connect(settings.database_path)
-    c.row_factory = sqlite3.Row
-    return c
+def _utcnow():
+    return datetime.now(timezone.utc)
+
+
+_url = settings.effective_database_url
+_connect_args = {"check_same_thread": False} if _url.startswith("sqlite") else {}
+engine = create_engine(_url, pool_pre_ping=True, connect_args=_connect_args)
+metadata = MetaData()
+
+users = Table(
+    "users", metadata,
+    Column("id", BigInteger, primary_key=True),
+    Column("username", String(255)),
+    Column("first_name", String(255)),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+progress = Table(
+    "progress", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", BigInteger, nullable=False, index=True),
+    Column("title_id", String(255), nullable=False),
+    Column("season", Integer, nullable=False),
+    Column("episode", Integer, nullable=False),
+    Column("position", Float, nullable=False, default=0),
+    Column("duration", Float, nullable=False, default=0),
+    Column("source_id", String(255)),
+    Column("voice_id", String(255)),
+    Column("quality", String(64)),
+    Column("updated_at", DateTime(timezone=True), nullable=False, index=True),
+    UniqueConstraint("user_id", "title_id", "season", "episode", name="uq_progress_item"),
+)
+
+favorites = Table(
+    "favorites", metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", BigInteger, nullable=False, index=True),
+    Column("title_id", String(255), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    UniqueConstraint("user_id", "title_id", name="uq_favorite_item"),
+)
+
 
 def init_db():
-    with conn() as c:
-        c.executescript(SCHEMA)
+    metadata.create_all(engine)
 
-def upsert_user(user_id:int, username:str|None, first_name:str|None):
-    now=datetime.utcnow().isoformat()
-    with conn() as c:
-        c.execute("""INSERT INTO users(id,username,first_name,created_at) VALUES(?,?,?,?)
-        ON CONFLICT(id) DO UPDATE SET username=excluded.username,first_name=excluded.first_name""",
-        (user_id,username,first_name,now))
 
-def save_progress(p:dict):
-    now=datetime.utcnow().isoformat()
-    with conn() as c:
-        c.execute("""INSERT INTO progress(user_id,title_id,season,episode,position,duration,source_id,voice_id,quality,updated_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT(user_id,title_id,season,episode) DO UPDATE SET
-        position=excluded.position,duration=excluded.duration,source_id=excluded.source_id,
-        voice_id=excluded.voice_id,quality=excluded.quality,updated_at=excluded.updated_at""",
-        (p['user_id'],p['title_id'],p['season'],p['episode'],p['position'],p['duration'],p.get('source_id'),p.get('voice_id'),p.get('quality'),now))
+def upsert_user(user_id: int, username: str | None, first_name: str | None):
+    now = _utcnow()
+    with engine.begin() as c:
+        exists = c.execute(select(users.c.id).where(users.c.id == user_id)).first()
+        if exists:
+            c.execute(update(users).where(users.c.id == user_id).values(username=username, first_name=first_name))
+        else:
+            c.execute(insert(users).values(id=user_id, username=username, first_name=first_name, created_at=now))
 
-def get_progress(user_id:int,title_id:str,season:int,episode:int):
-    with conn() as c:
-        return c.execute("SELECT * FROM progress WHERE user_id=? AND title_id=? AND season=? AND episode=?",
-                         (user_id,title_id,season,episode)).fetchone()
 
-def get_continue(user_id:int,limit:int=20):
-    with conn() as c:
-        return c.execute("SELECT * FROM progress WHERE user_id=? ORDER BY updated_at DESC LIMIT ?",(user_id,limit)).fetchall()
-
-def toggle_favorite(user_id:int,title_id:str):
-    with conn() as c:
-        row=c.execute("SELECT id FROM favorites WHERE user_id=? AND title_id=?",(user_id,title_id)).fetchone()
+def save_progress(p: dict):
+    now = _utcnow()
+    key = (
+        (progress.c.user_id == p["user_id"]) &
+        (progress.c.title_id == p["title_id"]) &
+        (progress.c.season == p["season"]) &
+        (progress.c.episode == p["episode"])
+    )
+    values = dict(
+        position=p.get("position", 0), duration=p.get("duration", 0),
+        source_id=p.get("source_id"), voice_id=p.get("voice_id"),
+        quality=p.get("quality"), updated_at=now,
+    )
+    with engine.begin() as c:
+        row = c.execute(select(progress.c.id).where(key)).first()
         if row:
-            c.execute("DELETE FROM favorites WHERE id=?",(row['id'],)); return False
-        c.execute("INSERT INTO favorites(user_id,title_id,created_at) VALUES(?,?,?)",(user_id,title_id,datetime.utcnow().isoformat())); return True
+            c.execute(update(progress).where(key).values(**values))
+        else:
+            c.execute(insert(progress).values(
+                user_id=p["user_id"], title_id=p["title_id"], season=p["season"], episode=p["episode"], **values
+            ))
 
-def favorite_ids(user_id:int):
-    with conn() as c:
-        return [r['title_id'] for r in c.execute("SELECT title_id FROM favorites WHERE user_id=? ORDER BY created_at DESC",(user_id,)).fetchall()]
+
+def get_progress(user_id: int, title_id: str, season: int, episode: int):
+    stmt = select(progress).where(
+        (progress.c.user_id == user_id) &
+        (progress.c.title_id == title_id) &
+        (progress.c.season == season) &
+        (progress.c.episode == episode)
+    )
+    with engine.connect() as c:
+        row = c.execute(stmt).mappings().first()
+        return dict(row) if row else None
+
+
+def get_continue(user_id: int, limit: int = 20):
+    stmt = select(progress).where(progress.c.user_id == user_id).order_by(progress.c.updated_at.desc()).limit(limit)
+    with engine.connect() as c:
+        return [dict(r) for r in c.execute(stmt).mappings().all()]
+
+
+def toggle_favorite(user_id: int, title_id: str):
+    stmt = select(favorites.c.id).where((favorites.c.user_id == user_id) & (favorites.c.title_id == title_id))
+    with engine.begin() as c:
+        row = c.execute(stmt).first()
+        if row:
+            c.execute(delete(favorites).where(favorites.c.id == row.id))
+            return False
+        c.execute(insert(favorites).values(user_id=user_id, title_id=title_id, created_at=_utcnow()))
+        return True
+
+
+def favorite_ids(user_id: int):
+    stmt = select(favorites.c.title_id).where(favorites.c.user_id == user_id).order_by(favorites.c.created_at.desc())
+    with engine.connect() as c:
+        return [r[0] for r in c.execute(stmt).all()]
+
+
+def database_kind() -> str:
+    return engine.url.get_backend_name()
