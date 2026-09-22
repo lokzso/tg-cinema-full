@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from aiogram.types import Update
 from fastapi import FastAPI, Request, HTTPException, Header
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from .config import settings
@@ -18,9 +18,12 @@ from .providers.registry import search_catalog, get_catalog_title
 from .sources.registry import collect_streams
 from .bot import bot, dp, setup_webhook, close_bot
 
+BASE_DIR = Path(__file__).resolve().parent
+STATIC_DIR = BASE_DIR / "static"
+INDEX_FILE = BASE_DIR / "templates" / "index.html"
+
 app = FastAPI(title="Tg Cinema")
-app.mount("/static", StaticFiles(directory="app/static"), name="static")
-templates = Jinja2Templates(directory="app/templates")
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 @app.on_event("startup")
@@ -36,7 +39,11 @@ async def shutdown():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "database": database_kind(), "telegram": "webhook" if settings.webhook_enabled else "polling"}
+    return {
+        "ok": True,
+        "database": database_kind(),
+        "telegram": "webhook" if settings.webhook_enabled else "polling",
+    }
 
 
 @app.post("/telegram/webhook")
@@ -51,9 +58,11 @@ async def telegram_webhook(request: Request, x_telegram_bot_api_secret_token: st
     return {"ok": True}
 
 
-@app.get("/", response_class=HTMLResponse)
-def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+@app.get("/")
+def index():
+    if not INDEX_FILE.exists():
+        raise HTTPException(500, f"Mini App index file not found: {INDEX_FILE}")
+    return FileResponse(str(INDEX_FILE), media_type="text/html; charset=utf-8")
 
 
 @app.get("/api/catalog")
@@ -114,8 +123,11 @@ def progress_get(user_id: int, title_id: str, season: int, episode: int):
     if not row:
         return None
     return {
-        "position": row["position"], "duration": row["duration"], "source_id": row["source_id"],
-        "voice_id": row["voice_id"], "quality": row["quality"],
+        "position": row["position"],
+        "duration": row["duration"],
+        "source_id": row["source_id"],
+        "voice_id": row["voice_id"],
+        "quality": row["quality"],
     }
 
 
@@ -127,7 +139,13 @@ async def continue_watching(user_id: int):
     for r, t in zip(rows, titles):
         if isinstance(t, Exception) or not t:
             continue
-        out.append({"title": t, "season": r["season"], "episode": r["episode"], "position": r["position"], "duration": r["duration"]})
+        out.append({
+            "title": t,
+            "season": r["season"],
+            "episode": r["episode"],
+            "position": r["position"],
+            "duration": r["duration"],
+        })
     return out
 
 
