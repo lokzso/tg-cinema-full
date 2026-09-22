@@ -1,0 +1,17 @@
+<!doctype html><html lang="ru"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Cinema</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1"></script>
+<link rel="stylesheet" href="/static/style.css">
+</head><body>
+<header><div class="brand">CINEMA</div><div class="avatar" id="avatar">C</div></header>
+<main>
+<section class="hero"><h1>Что смотрим?</h1><p>Каталог, продолжение и просмотр в одном месте.</p><input id="search" placeholder="Название фильма, сериала или аниме"></section>
+<nav class="tabs"><button class="active" data-tab="catalog">Каталог</button><button data-tab="continue">Продолжить</button><button data-tab="favorites">Избранное</button></nav>
+<section id="content" class="grid"></section>
+</main>
+<div id="sheet" class="sheet hidden"><div class="sheet-inner"><button id="closeSheet" class="close">✕</button><div id="details"></div></div></div>
+<div id="playerView" class="player-view hidden"><button id="closePlayer" class="close player-close">✕</button><video id="video" controls playsinline></video><div class="player-panel"><h3 id="nowTitle"></h3><div id="streamControls"></div></div></div>
+<script src="/static/app.js"></script>
+</body></html>
